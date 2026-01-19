@@ -746,6 +746,7 @@ def main():
                         last_send_time = current_time
                         next_send = SEND_INTERVAL
                     else:
+                        last_send_time = current_time  # エラー時もタイムスタンプを更新
                         next_send = 60  # エラー時は1分後にリトライ
                     print(f"  → 次回送信まで: {next_send}秒")
                     wdt.feed()  # 送信後にWDT feed
