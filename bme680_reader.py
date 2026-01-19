@@ -25,8 +25,7 @@ import gc
 # WiFi設定（優先順位順）
 # ============================================
 WIFI_NETWORKS = [
-    {"ssid": "fun-wifi", "password": "fun-wifi"},
-    {"ssid": "wallfacer9", "password": "2choco2dango3jam"},
+    {"ssid": "free-wifi", "password": "free-wifi"},
 ]
 
 # ============================================
