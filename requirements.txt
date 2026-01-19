@@ -1,0 +1,12 @@
+# 開発用ツール（ホスト側で使用）
+# Raspberry Pi Pico W自体にはインストール不要
+
+# MicroPython ファイル転送・実行ツール
+mpremote>=1.22.0
+
+# シリアル通信ライブラリ（mpremoteが依存）
+pyserial>=3.5
+
+# オプション: コード品質チェック
+# ruff>=0.1.0
+# mypy>=1.7.0

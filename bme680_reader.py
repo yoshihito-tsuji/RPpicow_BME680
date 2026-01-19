@@ -14,7 +14,7 @@ Raspberry Pi Pico W用
 - Ambientへデータ送信（10分間隔）
 """
 
-from machine import Pin, I2C
+from machine import Pin, I2C, WDT
 import time
 import struct
 import network
@@ -36,6 +36,20 @@ AMBIENT_WRITE_KEY = "1259d6fac2a1af55"
 
 # データ送信間隔（秒）
 SEND_INTERVAL = 600  # 10分 = 600秒
+
+# ============================================
+# ウォッチドッグタイマー設定
+# ============================================
+WDT_TIMEOUT_MS = 8388  # 最大値: 8388ms（約8.3秒）
+# 注意: Raspberry Pi Pico WのWDTは最大8388msまで
+
+# ============================================
+# 堅牢化設定
+# ============================================
+I2C_MAX_RETRIES = 3  # I2C読み取り最大再試行回数
+I2C_FAIL_THRESHOLD = 5  # I2C連続失敗でリセットするしきい値
+WIFI_MAX_RETRIES = 4  # WiFi接続最大再試行回数
+HTTP_MAX_RETRIES = 3  # HTTP送信最大再試行回数
 
 # ============================================
 # BME680 I2Cアドレス
@@ -158,12 +172,12 @@ class BME680:
         # 湿度オーバーサンプリング x2
         self._write_byte(BME680_REG_CTRL_HUM, 0x02)
 
-        # ガスセンサー設定
+        # ガスセンサー設定 - 無効化（屋外使用のため不要）
         # ヒーター温度設定（300℃）
-        self._set_gas_heater(300, 100)
+        # self._set_gas_heater(300, 100)
 
-        # ガス計測有効化
-        self._write_byte(BME680_REG_CTRL_GAS_1, 0x10)
+        # ガス計測無効化
+        self._write_byte(BME680_REG_CTRL_GAS_1, 0x00)
 
         # フィルタ係数 3, 3線SPIオフ
         self._write_byte(BME680_REG_CONFIG, 0x04)
@@ -197,57 +211,64 @@ class BME680:
 
         return int(duration + (factor * 64))
 
-    def read_data(self):
-        """全センサーデータを読み取る"""
-        # 強制モードで計測開始
-        # 温度・気圧オーバーサンプリング x4, 強制モード
-        self._write_byte(BME680_REG_CTRL_MEAS, 0x55)
+    def read_data(self, retries=I2C_MAX_RETRIES):
+        """
+        全センサーデータを読み取る（再試行機能付き）
 
-        # 計測完了を待機
-        time.sleep_ms(200)
+        Args:
+            retries: 最大再試行回数
 
-        # データ読み取り
-        data = self._read_bytes(BME680_REG_DATA, 15)
+        Returns:
+            dict: センサーデータ、失敗時はNone
+        """
+        for attempt in range(retries):
+            try:
+                # 強制モードで計測開始
+                # 温度・気圧オーバーサンプリング x4, 強制モード
+                self._write_byte(BME680_REG_CTRL_MEAS, 0x55)
 
-        # ADC値を抽出
-        adc_pres = (data[2] << 12) | (data[3] << 4) | (data[4] >> 4)
-        adc_temp = (data[5] << 12) | (data[6] << 4) | (data[7] >> 4)
-        adc_hum = (data[8] << 8) | data[9]
-        adc_gas = (data[13] << 2) | (data[14] >> 6)
-        gas_range = data[14] & 0x0F
+                # 計測完了を待機
+                time.sleep_ms(200)
 
-        # ガス計測有効フラグ
-        gas_valid = (data[14] >> 5) & 0x01
-        heat_stable = (data[14] >> 4) & 0x01
+                # データ読み取り
+                data = self._read_bytes(BME680_REG_DATA, 15)
 
-        # 温度計算
-        temperature = self._calc_temperature(adc_temp)
+                # ADC値を抽出
+                adc_pres = (data[2] << 12) | (data[3] << 4) | (data[4] >> 4)
+                adc_temp = (data[5] << 12) | (data[6] << 4) | (data[7] >> 4)
+                adc_hum = (data[8] << 8) | data[9]
 
-        # 気圧計算
-        pressure = self._calc_pressure(adc_pres)
+                # 温度計算
+                temperature = self._calc_temperature(adc_temp)
 
-        # 湿度計算
-        humidity = self._calc_humidity(adc_hum)
+                # 気圧計算
+                pressure = self._calc_pressure(adc_pres)
 
-        # ガス抵抗計算
-        gas_resistance = None
-        if gas_valid and heat_stable:
-            gas_resistance = self._calc_gas_resistance(adc_gas, gas_range)
+                # 湿度計算
+                humidity = self._calc_humidity(adc_hum)
 
-        # キャリブレーション適用
-        temperature_calibrated = temperature + TEMP_OFFSET
-        humidity_calibrated = humidity + HUMIDITY_OFFSET
-        pressure_calibrated = pressure + PRESSURE_OFFSET
+                # キャリブレーション適用
+                temperature_calibrated = temperature + TEMP_OFFSET
+                humidity_calibrated = humidity + HUMIDITY_OFFSET
+                pressure_calibrated = pressure + PRESSURE_OFFSET
 
-        return {
-            'temperature': temperature_calibrated,
-            'temperature_raw': temperature,
-            'pressure': pressure_calibrated,
-            'humidity': humidity_calibrated,
-            'gas_resistance': gas_resistance,
-            'gas_valid': gas_valid,
-            'heat_stable': heat_stable
-        }
+                return {
+                    'temperature': temperature_calibrated,
+                    'temperature_raw': temperature,
+                    'pressure': pressure_calibrated,
+                    'humidity': humidity_calibrated,
+                    'gas_resistance': None,
+                    'gas_valid': False,
+                    'heat_stable': False
+                }
+
+            except Exception as e:
+                print(f"[エラー] I2C読み取り失敗 (試行 {attempt + 1}/{retries}): {e}")
+                if attempt < retries - 1:
+                    time.sleep_ms(100 * (attempt + 1))  # 再試行前に待機（指数バックオフ）
+                else:
+                    print("[エラー] I2C読み取り最大再試行回数に達しました")
+                    return None
 
     def _calc_temperature(self, adc_temp):
         """温度を計算（℃）"""
@@ -316,86 +337,144 @@ class BME680:
         return gas_resistance
 
 
-def connect_wifi():
-    """WiFiに接続（複数SSIDに対応）"""
+def reinit_i2c_and_sensor():
+    """I2CとBME680センサーを再初期化"""
+    print("[システム] I2Cとセンサーを再初期化中...")
+    try:
+        # I2C再初期化
+        i2c = I2C(0, sda=Pin(0), scl=Pin(1), freq=100000)
+        time.sleep(2)
+
+        # センサー再初期化
+        sensor = BME680(i2c)
+        print("[システム] I2C再初期化成功")
+        return i2c, sensor
+    except Exception as e:
+        print(f"[エラー] I2C再初期化失敗: {e}")
+        return None, None
+
+
+def connect_wifi(retry_count=0):
+    """
+    WiFiに接続（複数SSID対応、指数バックオフ）
+
+    Args:
+        retry_count: 現在の再試行回数（指数バックオフ計算用）
+
+    Returns:
+        wlan: WiFiオブジェクト（接続成功時）、None（失敗時）
+    """
     wlan = network.WLAN(network.STA_IF)
     wlan.active(True)
 
     # すでに接続済みの場合
     if wlan.isconnected():
-        print(f"WiFi接続済み: {wlan.ifconfig()[0]}")
+        print(f"[WiFi] 接続済み: {wlan.ifconfig()[0]}")
         return wlan
 
-    print("WiFiネットワークをスキャン中...")
-    available_networks = [net[0].decode() for net in wlan.scan()]
-    print(f"検出されたネットワーク: {available_networks}")
+    # 指数バックオフ待機（再試行時）
+    if retry_count > 0:
+        wait_time = min(2 ** (retry_count - 1), 60)  # 最大60秒
+        print(f"[WiFi] 再試行前に{wait_time}秒待機...")
+        time.sleep(wait_time)
+
+    print("[WiFi] ネットワークをスキャン中...")
+    try:
+        scan_results = wlan.scan()
+        available_networks = [net[0].decode() for net in scan_results]
+        print(f"[WiFi] 検出されたネットワーク: {available_networks}")
+    except Exception as e:
+        print(f"[エラー] WiFiスキャン失敗: {e}")
+        return None
 
     # 優先順位順にSSIDを試す
-    for wifi in WIFI_NETWORKS:
+    for wifi_idx, wifi in enumerate(WIFI_NETWORKS):
         ssid = wifi["ssid"]
         password = wifi["password"]
 
         if ssid in available_networks:
-            print(f"'{ssid}' に接続中...")
-            wlan.connect(ssid, password)
+            print(f"[WiFi] '{ssid}' に接続中... (優先度 {wifi_idx + 1}/{len(WIFI_NETWORKS)})")
+            try:
+                wlan.connect(ssid, password)
 
-            # 接続待機（最大20秒）
-            for _ in range(20):
-                if wlan.isconnected():
-                    ip = wlan.ifconfig()[0]
-                    print(f"WiFi接続成功: {ip}")
-                    return wlan
-                time.sleep(1)
+                # 接続待機（最大20秒）
+                for _ in range(20):
+                    if wlan.isconnected():
+                        ip = wlan.ifconfig()[0]
+                        print(f"[WiFi] 接続成功: {ip}")
+                        return wlan
+                    time.sleep(1)
 
-            print(f"'{ssid}' への接続タイムアウト")
-            wlan.disconnect()
+                print(f"[WiFi] '{ssid}' への接続タイムアウト")
+                wlan.disconnect()
 
-    print("利用可能なWiFiネットワークに接続できませんでした")
+            except Exception as e:
+                print(f"[エラー] '{ssid}' への接続失敗: {e}")
+                try:
+                    wlan.disconnect()
+                except:
+                    pass
+
+    print("[WiFi] 利用可能なネットワークに接続できませんでした")
     return None
 
 
-def send_to_ambient(data, iaq):
-    """Ambientにデータを送信"""
+def send_to_ambient(data, retries=HTTP_MAX_RETRIES):
+    """
+    Ambientにデータを送信（再試行機能付き）
+
+    Args:
+        data: 送信するセンサーデータ
+        retries: 最大再試行回数
+
+    Returns:
+        bool: 送信成功時True、失敗時False
+    """
     url = f"http://ambidata.io/api/v2/channels/{AMBIENT_CHANNEL_ID}/data"
 
-    # Ambient用データフォーマット（案2: IAQ重視）
-    # d1: 温度, d2: 湿度, d3: IAQスコア, d4: 気圧, d5: ガス抵抗値
+    # Ambient用データフォーマット（屋外気象観測用）
+    # d1: 温度, d2: 湿度, d3: 気圧
     payload = {
         "writeKey": AMBIENT_WRITE_KEY,
         "d1": round(data['temperature'], 1),
         "d2": round(data['humidity'], 1),
-        "d4": round(data['pressure'], 1),
+        "d3": round(data['pressure'], 1),
     }
 
-    # IAQスコアがある場合は追加
-    if iaq is not None:
-        payload["d3"] = round(iaq, 0)
+    for attempt in range(retries):
+        response = None
+        try:
+            response = urequests.post(
+                url,
+                json=payload,
+                headers={"Content-Type": "application/json"}
+            )
+            status = response.status_code
 
-    # ガス抵抗値がある場合は追加
-    if data['gas_resistance'] is not None and data['gas_resistance'] > 0:
-        payload["d5"] = round(data['gas_resistance'], 0)
+            if status == 200:
+                print("[Ambient] 送信成功")
+                return True
+            else:
+                print(f"[エラー] Ambient送信失敗: HTTP {status} (試行 {attempt + 1}/{retries})")
 
-    try:
-        response = urequests.post(
-            url,
-            json=payload,
-            headers={"Content-Type": "application/json"}
-        )
-        status = response.status_code
-        response.close()
+        except Exception as e:
+            print(f"[エラー] Ambient送信例外 (試行 {attempt + 1}/{retries}): {e}")
 
-        if status == 200:
-            print("Ambient送信成功")
-            return True
-        else:
-            print(f"Ambient送信エラー: HTTP {status}")
-            return False
+        finally:
+            # 必ずソケットをクローズ
+            if response is not None:
+                try:
+                    response.close()
+                except:
+                    pass
+            gc.collect()
 
-    except Exception as e:
-        print(f"Ambient送信例外: {e}")
-        return False
-    finally:
-        gc.collect()
+        # 再試行前に待機
+        if attempt < retries - 1:
+            time.sleep(2 * (attempt + 1))  # 2秒、4秒、6秒...
+
+    print("[エラー] Ambient送信最大再試行回数に達しました")
+    return False
 
 
 def estimate_iaq(gas_resistance, humidity):
@@ -449,21 +528,132 @@ def get_iaq_category(iaq):
         return "危険 (Severely Polluted)"
 
 
+def print_memory_info():
+    """メモリ使用状況を表示"""
+    try:
+        import micropython
+        free = gc.mem_free()
+        alloc = gc.mem_alloc()
+        total = free + alloc
+        usage_percent = (alloc / total) * 100
+        print(f"[メモリ] 使用: {alloc} bytes / 空き: {free} bytes ({usage_percent:.1f}% 使用)")
+    except:
+        pass
+
+
+def system_selfcheck():
+    """
+    起動時セルフチェック
+
+    Returns:
+        bool: チェック成功時True、失敗時False
+    """
+    print()
+    print("=" * 50)
+    print("システムセルフチェック開始")
+    print("=" * 50)
+
+    check_passed = True
+
+    # 1. メモリチェック
+    print("[チェック 1/4] メモリ状態確認...")
+    try:
+        free = gc.mem_free()
+        if free < 10000:  # 10KB未満は警告
+            print(f"  [警告] 空きメモリが少ない: {free} bytes")
+            check_passed = False
+        else:
+            print(f"  [OK] 空きメモリ: {free} bytes")
+    except Exception as e:
+        print(f"  [エラー] メモリチェック失敗: {e}")
+        check_passed = False
+
+    # 2. I2Cデバイスチェック
+    print("[チェック 2/4] I2Cデバイス確認...")
+    try:
+        i2c = I2C(0, sda=Pin(0), scl=Pin(1), freq=100000)
+        time.sleep_ms(100)
+        devices = i2c.scan()
+        if BME680_ADDR in devices or 0x76 in devices:
+            print(f"  [OK] BME680検出: {[hex(d) for d in devices]}")
+        else:
+            print(f"  [エラー] BME680が見つかりません: {[hex(d) for d in devices]}")
+            check_passed = False
+    except Exception as e:
+        print(f"  [エラー] I2Cチェック失敗: {e}")
+        check_passed = False
+
+    # 3. WiFi設定チェック
+    print("[チェック 3/4] WiFi設定確認...")
+    try:
+        if len(WIFI_NETWORKS) == 0:
+            print("  [エラー] WiFiネットワークが設定されていません")
+            check_passed = False
+        else:
+            print(f"  [OK] WiFi設定数: {len(WIFI_NETWORKS)}")
+            for idx, wifi in enumerate(WIFI_NETWORKS):
+                print(f"    - 優先度 {idx + 1}: {wifi['ssid']}")
+    except Exception as e:
+        print(f"  [エラー] WiFi設定チェック失敗: {e}")
+        check_passed = False
+
+    # 4. Ambient設定チェック
+    print("[チェック 4/4] Ambient設定確認...")
+    try:
+        if AMBIENT_CHANNEL_ID == 0 or AMBIENT_WRITE_KEY == "":
+            print("  [エラー] Ambient設定が不完全です")
+            check_passed = False
+        else:
+            print(f"  [OK] チャンネルID: {AMBIENT_CHANNEL_ID}")
+    except Exception as e:
+        print(f"  [エラー] Ambient設定チェック失敗: {e}")
+        check_passed = False
+
+    print("=" * 50)
+    if check_passed:
+        print("セルフチェック完了: すべて正常")
+    else:
+        print("セルフチェック完了: 一部に問題があります")
+    print("=" * 50)
+    print()
+
+    return check_passed
+
+
 def main():
     """メイン関数"""
     print("=" * 50)
-    print("BME680 環境センサー + Ambient送信")
+    print("BME680 気象観測センサー + Ambient送信")
+    print("（ガスセンサー無効 - 温度/湿度/気圧のみ）")
+    print("堅牢化版 v2.0 - WDT/再試行/エラー処理強化")
     print("=" * 50)
+    print()
+
+    # 初期メモリ状態
+    gc.collect()
+    print_memory_info()
+
+    # システムセルフチェック
+    selfcheck_passed = system_selfcheck()
+    if not selfcheck_passed:
+        print("[警告] セルフチェックで問題が検出されましたが、起動を継続します")
+
+    # ウォッチドッグタイマー初期化
+    print(f"ウォッチドッグタイマー初期化（タイムアウト: {WDT_TIMEOUT_MS//1000}秒）...")
+    wdt = WDT(timeout=WDT_TIMEOUT_MS)
+    print("WDT初期化完了")
     print()
 
     # 起動時の安定化待機
     print("システム初期化中...")
     time.sleep(5)
+    wdt.feed()  # WDT feed
 
     # I2C初期化（ピン1=GP0=SDA, ピン2=GP1=SCL）
     # ハードウェアI2Cを使用
     i2c = I2C(0, sda=Pin(0), scl=Pin(1), freq=100000)
     time.sleep(2)
+    wdt.feed()  # WDT feed
 
     # I2Cスキャン
     print("I2Cデバイスをスキャン中...")
@@ -480,6 +670,7 @@ def main():
     # BME680初期化
     try:
         sensor = BME680(i2c)
+        wdt.feed()  # WDT feed
     except RuntimeError as e:
         print(f"エラー: {e}")
         return
@@ -488,27 +679,50 @@ def main():
 
     # WiFi接続
     wlan = connect_wifi()
+    wdt.feed()  # WDT feed
     if wlan is None:
         print("WiFi接続なしでローカル計測のみ実行します")
 
     print()
     print(f"計測を開始します（送信間隔: {SEND_INTERVAL}秒）")
     print("-" * 50)
-
-    # ガスセンサーの安定化に時間がかかるため通知
-    print("※ ガス抵抗値が安定するまで数分かかる場合があります")
     print()
 
     last_send_time = 0  # 初回は即座に送信
+    i2c_fail_count = 0  # I2C連続失敗カウンタ
+    wifi_retry_count = 0  # WiFi再試行カウンタ
+    loop_count = 0  # ループカウンタ
 
     try:
         while True:
+            wdt.feed()  # メインループ開始時にWDT feed
+            loop_count += 1
+
             # データ読み取り
             data = sensor.read_data()
 
-            # IAQ推定
-            iaq = estimate_iaq(data['gas_resistance'], data['humidity'])
-            iaq_category = get_iaq_category(iaq)
+            if data is None:
+                # データ読み取り失敗
+                i2c_fail_count += 1
+                print(f"[警告] I2C連続失敗回数: {i2c_fail_count}/{I2C_FAIL_THRESHOLD}")
+
+                if i2c_fail_count >= I2C_FAIL_THRESHOLD:
+                    print("[システム] I2C連続失敗しきい値に到達、再初期化します")
+                    i2c, sensor = reinit_i2c_and_sensor()
+                    if i2c is None or sensor is None:
+                        print("[致命的エラー] I2C再初期化に失敗しました。WDTによるリセットを待ちます...")
+                        while True:  # WDTタイムアウトでリセットされるまで待機
+                            time.sleep(1)
+                    i2c_fail_count = 0
+                    wdt.feed()
+                    gc.collect()  # メモリクリーンアップ
+
+                # 失敗時は短い間隔で再試行
+                time.sleep(10)
+                continue
+            else:
+                # データ読み取り成功、失敗カウンタリセット
+                i2c_fail_count = 0
 
             # 現在時刻
             current_time = time.time()
@@ -519,33 +733,45 @@ def main():
             print(f"  湿度:       {data['humidity']:.1f} %RH")
             print(f"  気圧:       {data['pressure']:.1f} hPa")
 
-            if data['gas_resistance'] is not None:
-                print(f"  ガス抵抗:   {data['gas_resistance']:.0f} Ω")
-                print(f"  IAQスコア:  {iaq:.0f}")
-                print(f"  空気質:     {iaq_category}")
-            else:
-                print(f"  ガス抵抗:   計測中...")
-                print(f"  ヒーター:   {'安定' if data['heat_stable'] else '加熱中'}")
+            wdt.feed()  # データ読み取り後にWDT feed
 
             # Ambient送信（10分間隔）
             if wlan and wlan.isconnected():
+                # WiFi接続中、再試行カウンタリセット
+                wifi_retry_count = 0
+
                 if current_time - last_send_time >= SEND_INTERVAL:
                     print("  → Ambientに送信中...")
-                    if send_to_ambient(data, iaq):
+                    if send_to_ambient(data):
                         last_send_time = current_time
                         next_send = SEND_INTERVAL
                     else:
                         next_send = 60  # エラー時は1分後にリトライ
                     print(f"  → 次回送信まで: {next_send}秒")
+                    wdt.feed()  # 送信後にWDT feed
+                    gc.collect()  # 送信後にメモリクリーンアップ
                 else:
                     remaining = SEND_INTERVAL - (current_time - last_send_time)
                     print(f"  → 次回送信まで: {int(remaining)}秒")
             else:
-                # WiFi再接続を試行
-                print("  → WiFi未接続（再接続試行中...）")
-                wlan = connect_wifi()
+                # WiFi再接続を試行（指数バックオフ）
+                print(f"  → WiFi未接続（再接続試行 {wifi_retry_count + 1}/{WIFI_MAX_RETRIES}）")
+                wlan = connect_wifi(retry_count=wifi_retry_count)
+                if wlan is None:
+                    wifi_retry_count = min(wifi_retry_count + 1, WIFI_MAX_RETRIES)
+                else:
+                    wifi_retry_count = 0
+                wdt.feed()  # WiFi接続後にWDT feed
+                gc.collect()  # WiFi処理後にメモリクリーンアップ
+
+            # 10ループごとにメモリ情報表示
+            if loop_count % 10 == 0:
+                print_memory_info()
 
             print("-" * 50)
+
+            # メモリクリーンアップ
+            gc.collect()
 
             # 30秒待機（ローカル表示用）
             time.sleep(30)

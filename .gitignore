@@ -6,6 +6,8 @@ __pycache__/
 .Python
 *.egg-info/
 .eggs/
+dist/
+build/
 
 # Environment
 .env
@@ -23,6 +25,20 @@ venv/
 .DS_Store
 Thumbs.db
 
-# Credentials (don't commit actual credentials)
-# credentials.json
-# secrets.py
+# MicroPython
+# *.pyc は Pico W 上のコンパイル済みファイル
+
+# 個人設定ファイル（WiFiパスワードやAPIキーを含む場合）
+secrets.py
+config_local.py
+
+# バックアップファイル
+*.bak
+*~
+
+# ログファイル
+*.log
+
+# テンポラリファイル
+*.tmp
+.temp/
