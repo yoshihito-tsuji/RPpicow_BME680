@@ -49,7 +49,7 @@ BME680_ADDR = 0x77  # または 0x76（SDOピンの接続による）
 # ============================================
 TEMP_OFFSET = 28.74  # 温度オフセット（℃）
 HUMIDITY_OFFSET = -4.0  # 湿度オフセット（%RH）
-PRESSURE_OFFSET = 0.0  # 気圧オフセット（hPa）
+PRESSURE_OFFSET = 36.9  # 気圧オフセット（hPa）
 
 # BME680レジスタアドレス
 BME680_REG_CHIP_ID = 0xD0
