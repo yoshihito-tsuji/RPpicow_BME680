@@ -337,15 +337,25 @@ class BME680:
         return gas_resistance
 
 
-def reinit_i2c_and_sensor():
+def sleep_with_wdt(total_s, wdt, step=1):
+    """WDTをfeedしながらスリープ"""
+    if wdt is None:
+        time.sleep(total_s)
+        return
+    elapsed = 0
+    while elapsed < total_s:
+        s = min(step, total_s - elapsed)
+        time.sleep(s)
+        wdt.feed()
+        elapsed += s
+
+
+def reinit_i2c_and_sensor(wdt=None):
     """I2CとBME680センサーを再初期化"""
     print("[システム] I2Cとセンサーを再初期化中...")
     try:
-        # I2C再初期化
         i2c = I2C(0, sda=Pin(0), scl=Pin(1), freq=100000)
-        time.sleep(2)
-
-        # センサー再初期化
+        sleep_with_wdt(2, wdt, step=1)
         sensor = BME680(i2c)
         print("[システム] I2C再初期化成功")
         return i2c, sensor
@@ -354,12 +364,13 @@ def reinit_i2c_and_sensor():
         return None, None
 
 
-def connect_wifi(retry_count=0):
+def connect_wifi(retry_count=0, wdt=None):
     """
     WiFiに接続（複数SSID対応、指数バックオフ）
 
     Args:
         retry_count: 現在の再試行回数（指数バックオフ計算用）
+        wdt: ウォッチドッグタイマー（None可）
 
     Returns:
         wlan: WiFiオブジェクト（接続成功時）、None（失敗時）
@@ -374,11 +385,13 @@ def connect_wifi(retry_count=0):
 
     # 指数バックオフ待機（再試行時）
     if retry_count > 0:
-        wait_time = min(2 ** (retry_count - 1), 60)  # 最大60秒
+        wait_time = min(2 ** (retry_count - 1), 60)
         print(f"[WiFi] 再試行前に{wait_time}秒待機...")
-        time.sleep(wait_time)
+        sleep_with_wdt(wait_time, wdt)
 
     print("[WiFi] ネットワークをスキャン中...")
+    if wdt:
+        wdt.feed()
     try:
         scan_results = wlan.scan()
         available_networks = [net[0].decode() for net in scan_results]
@@ -404,6 +417,8 @@ def connect_wifi(retry_count=0):
                         print(f"[WiFi] 接続成功: {ip}")
                         return wlan
                     time.sleep(1)
+                    if wdt:
+                        wdt.feed()
 
                 print(f"[WiFi] '{ssid}' への接続タイムアウト")
                 wlan.disconnect()
@@ -419,21 +434,20 @@ def connect_wifi(retry_count=0):
     return None
 
 
-def send_to_ambient(data, retries=HTTP_MAX_RETRIES):
+def send_to_ambient(data, retries=HTTP_MAX_RETRIES, wdt=None):
     """
     Ambientにデータを送信（再試行機能付き）
 
     Args:
         data: 送信するセンサーデータ
         retries: 最大再試行回数
+        wdt: ウォッチドッグタイマー（None可）
 
     Returns:
         bool: 送信成功時True、失敗時False
     """
     url = f"http://ambidata.io/api/v2/channels/{AMBIENT_CHANNEL_ID}/data"
 
-    # Ambient用データフォーマット（屋外気象観測用）
-    # d1: 温度, d2: 湿度, d3: 気圧
     payload = {
         "writeKey": AMBIENT_WRITE_KEY,
         "d1": round(data['temperature'], 1),
@@ -444,11 +458,24 @@ def send_to_ambient(data, retries=HTTP_MAX_RETRIES):
     for attempt in range(retries):
         response = None
         try:
-            response = urequests.post(
-                url,
-                json=payload,
-                headers={"Content-Type": "application/json"}
-            )
+            if wdt:
+                wdt.feed()
+            try:
+                response = urequests.post(
+                    url,
+                    json=payload,
+                    headers={"Content-Type": "application/json"},
+                    timeout=5
+                )
+            except TypeError:
+                print("[Ambient] timeout未対応、タイムアウトなしで送信")
+                response = urequests.post(
+                    url,
+                    json=payload,
+                    headers={"Content-Type": "application/json"}
+                )
+            if wdt:
+                wdt.feed()
             status = response.status_code
 
             if status == 200:
@@ -461,7 +488,6 @@ def send_to_ambient(data, retries=HTTP_MAX_RETRIES):
             print(f"[エラー] Ambient送信例外 (試行 {attempt + 1}/{retries}): {e}")
 
         finally:
-            # 必ずソケットをクローズ
             if response is not None:
                 try:
                     response.close()
@@ -471,7 +497,7 @@ def send_to_ambient(data, retries=HTTP_MAX_RETRIES):
 
         # 再試行前に待機
         if attempt < retries - 1:
-            time.sleep(2 * (attempt + 1))  # 2秒、4秒、6秒...
+            sleep_with_wdt(2 * (attempt + 1), wdt)
 
     print("[エラー] Ambient送信最大再試行回数に達しました")
     return False
@@ -678,8 +704,8 @@ def main():
     print()
 
     # WiFi接続
-    wlan = connect_wifi()
-    wdt.feed()  # WDT feed
+    wlan = connect_wifi(wdt=wdt)
+    wdt.feed()
     if wlan is None:
         print("WiFi接続なしでローカル計測のみ実行します")
 
@@ -708,7 +734,7 @@ def main():
 
                 if i2c_fail_count >= I2C_FAIL_THRESHOLD:
                     print("[システム] I2C連続失敗しきい値に到達、再初期化します")
-                    i2c, sensor = reinit_i2c_and_sensor()
+                    i2c, sensor = reinit_i2c_and_sensor(wdt=wdt)
                     if i2c is None or sensor is None:
                         print("[致命的エラー] I2C再初期化に失敗しました。WDTによるリセットを待ちます...")
                         while True:  # WDTタイムアウトでリセットされるまで待機
@@ -718,7 +744,7 @@ def main():
                     gc.collect()  # メモリクリーンアップ
 
                 # 失敗時は短い間隔で再試行
-                time.sleep(10)
+                sleep_with_wdt(10, wdt, step=1)
                 continue
             else:
                 # データ読み取り成功、失敗カウンタリセット
@@ -742,28 +768,28 @@ def main():
 
                 if current_time - last_send_time >= SEND_INTERVAL:
                     print("  → Ambientに送信中...")
-                    if send_to_ambient(data):
+                    if send_to_ambient(data, wdt=wdt):
                         last_send_time = current_time
                         next_send = SEND_INTERVAL
                     else:
-                        last_send_time = current_time  # エラー時もタイムスタンプを更新
-                        next_send = 60  # エラー時は1分後にリトライ
+                        last_send_time = current_time
+                        next_send = 60
                     print(f"  → 次回送信まで: {next_send}秒")
-                    wdt.feed()  # 送信後にWDT feed
-                    gc.collect()  # 送信後にメモリクリーンアップ
+                    wdt.feed()
+                    gc.collect()
                 else:
                     remaining = SEND_INTERVAL - (current_time - last_send_time)
                     print(f"  → 次回送信まで: {int(remaining)}秒")
             else:
                 # WiFi再接続を試行（指数バックオフ）
                 print(f"  → WiFi未接続（再接続試行 {wifi_retry_count + 1}/{WIFI_MAX_RETRIES}）")
-                wlan = connect_wifi(retry_count=wifi_retry_count)
+                wlan = connect_wifi(retry_count=wifi_retry_count, wdt=wdt)
                 if wlan is None:
                     wifi_retry_count = min(wifi_retry_count + 1, WIFI_MAX_RETRIES)
                 else:
                     wifi_retry_count = 0
-                wdt.feed()  # WiFi接続後にWDT feed
-                gc.collect()  # WiFi処理後にメモリクリーンアップ
+                wdt.feed()
+                gc.collect()
 
             # 10ループごとにメモリ情報表示
             if loop_count % 10 == 0:
@@ -775,7 +801,7 @@ def main():
             gc.collect()
 
             # 30秒待機（ローカル表示用）
-            time.sleep(30)
+            sleep_with_wdt(30, wdt, step=5)
 
     except KeyboardInterrupt:
         print()
