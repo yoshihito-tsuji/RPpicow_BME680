@@ -2,6 +2,40 @@
 
 Raspberry Pi Pico W と BME680 環境センサーを使用した気象観測システム
 
+---
+
+## 🚨 重要：AI担当者への最優先指示
+
+**このREADME.mdを最初から最後まで必ず精読してください。**
+
+### 🤖 AI起動時の自動読み込み指示
+
+**あなた（AI）がこのREADME.mdを読んだら、必ず以下を実行してください：**
+
+#### Claude Code（実装担当）の場合
+
+1. `../Dev-Rules/claude-code/README.md` を読んでください（Best Practice）
+2. 三者間協働ルールに従い、From/To形式で応答を開始してください
+
+#### Codex（設計担当）の場合
+
+1. `../Dev-Rules/CODEX_ONBOARDING.md` を読んでください
+2. `../Dev-Rules/claude-code/README.md` を読んでください（Best Practice）
+3. 三者間協働ルールに従い、From/To形式で応答を開始してください
+
+#### UI/UX実装時（共通）
+
+- `../Dev-Rules/setup/ux-design-principles.md` を参照してください
+
+### 📚 開発方法論の詳細
+
+- **GitHub版**: [Dev-Rules](https://github.com/yoshihito-tsuji/Dev-Rules)
+- **ローカル版**: [../Dev-Rules/README.md](../Dev-Rules/README.md)
+- **Claude Code Best Practice**: [../Dev-Rules/claude-code/README.md](../Dev-Rules/claude-code/README.md)
+- **UI/UX心理学**: [../Dev-Rules/setup/ux-design-principles.md](../Dev-Rules/setup/ux-design-principles.md)
+
+---
+
 ## 概要
 
 BME680センサーから温度、湿度、気圧を取得し、Ambientクラウドサービスに送信するMicroPythonプログラムです。屋外気象観測を想定して、ガスセンサー機能は無効化しています。
@@ -131,15 +165,6 @@ mpremote connect /dev/cu.usbmodem* run bme680_reader.py
 - [BME680データシート](https://www.bosch-sensortec.com/products/environmental-sensors/gas-sensors/bme680/)
 - [Ambient API仕様](https://ambidata.io/refs/api/)
 - [mpremote公式ドキュメント](https://docs.micropython.org/en/latest/reference/mpremote.html)
-
-## 開発環境
-
-### 📚 開発方法論の詳細
-
-- **GitHub版**: [Dev-Rules](https://github.com/yoshihito-tsuji/Dev-Rules)
-- **ローカル版**: [../Dev-Rules/README.md](../Dev-Rules/README.md)
-- **Codex向けガイド**: [../Dev-Rules/CODEX_ONBOARDING.md](../Dev-Rules/CODEX_ONBOARDING.md)
-- **Claude Code Best Practice**: [../Dev-Rules/claude-code/README.md](../Dev-Rules/claude-code/README.md)
 
 ## ライセンス
 
