@@ -134,7 +134,12 @@ mpremote connect /dev/cu.usbmodem* run bme680_reader.py
 
 ## 開発環境
 
-詳細な開発環境のセットアップや運用ルールについては、[Dev-rules.md](Dev-rules.md)を参照してください。
+### 📚 開発方法論の詳細
+
+- **GitHub版**: [Dev-Rules](https://github.com/yoshihito-tsuji/Dev-Rules)
+- **ローカル版**: [../Dev-Rules/README.md](../Dev-Rules/README.md)
+- **Codex向けガイド**: [../Dev-Rules/CODEX_ONBOARDING.md](../Dev-Rules/CODEX_ONBOARDING.md)
+- **Claude Code Best Practice**: [../Dev-Rules/claude-code/README.md](../Dev-Rules/claude-code/README.md)
 
 ## ライセンス
 
